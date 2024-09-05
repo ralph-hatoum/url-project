@@ -1,3 +1,4 @@
 node_modules
 1m-sites
 .env
+.DS_Store
