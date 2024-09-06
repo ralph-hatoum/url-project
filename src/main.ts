@@ -21,7 +21,7 @@ const queryDurationTable = process.env.POSTGRES_QUERY_DURATION_TABLE
 const queryCountTable = process.env.POSTGRES_QUERY_COUNT
 const port = process.env.SERVICE_PORT
 
-const pgClient = new Client({
+export const pgClient = new Client({
   host: process.env.POSTGRES_HOST, // or your database host
   port: parseInt(process.env.POSTGRES_PORT || '0' ),        // default PostgreSQL port
   user: process.env.POSTGRES_USER, // your PostgreSQL user
@@ -30,7 +30,10 @@ const pgClient = new Client({
 });
 
 pgClient.connect()
-    .then(() => console.log('Connected to PostgreSQL'))
+    .then(() => {
+      console.log('Connected to PostgreSQL');
+      app.emit('ready'); 
+    })
     .catch(err => console.error('Connection error', err.stack));
 
 app.use(express.json());
@@ -62,13 +65,14 @@ app.get('/:id', async (req: Request, res: Response) => {
 
 // Create short link
 app.post('/link', async (req: Request, res: Response) => {
+  // todo : creating link that already exists should just return the link id
     const body  = req.body;
     if (body.link) {
       try {
       console.log(body.link)
       const id = encode(body.link)
       var queryDuration = await insertLinkInDb(body.link, id)
-      res.json({id: id})
+      res.status(201).json({id: id})
       insertQueryDuration("new_short_link", queryDuration)
       insertQueryCount("new_short_link")
       } catch (err) {
