@@ -1,7 +1,8 @@
 import express, { Request, Response } from 'express';
 import { IncomingMessage, ServerResponse } from 'http';
 import { Buffer } from "buffer";
-import { Client } from 'pg';
+import { Client, QueryResult } from 'pg';
+import { performance } from 'perf_hooks';
 
 import * as dotenv from 'dotenv';
 dotenv.config();
@@ -15,7 +16,9 @@ const handleRedirect = (req: IncomingMessage, res: ServerResponse, url: string) 
   res.end();
 };
 
-const urlsTable = process.env.POSTGRES_TABLE
+const urlsTable = process.env.POSTGRES_URL_TABLE
+const queryDurationTable = process.env.POSTGRES_QUERY_DURATION_TABLE
+const queryCountTable = process.env.POSTGRES_QUERY_COUNT
 const port = process.env.SERVICE_PORT
 
 const pgClient = new Client({
@@ -40,16 +43,17 @@ app.get('/health', (req: Request, res: Response) => {
 // Get short link
 app.get('/:id', async (req: Request, res: Response) => {
     const linkId = req.params.id;
+    console.log(`Handling request for ID ${linkId}`)
     try {
-      console.time('queryDuration');
-      const result = await pgClient.query(`SELECT url FROM ${urlsTable} WHERE id = $1`, [linkId]);
-      console.timeEnd('queryDuration');
+      var [result, queryDuration] = await readLinkFromDb(linkId)
       if (result.rows.length === 0) {
         // Handle case where no record is found
         res.status(404).send(`Link not found`);
         return;
       }
       handleRedirect(req, res, result.rows[0].url)
+      insertQueryDuration("get_link_from_id", queryDuration)
+      insertQueryCount("get_link_from_id")
     } catch (err) {
       console.error('Query error', err);
       res.status(500).send('Internal Server Error');
@@ -63,11 +67,10 @@ app.post('/link', async (req: Request, res: Response) => {
       try {
       console.log(body.link)
       const id = encode(body.link)
-      const queryText = `INSERT INTO ${urlsTable}(id, url) VALUES($1, $2) RETURNING *`;
-      const values = [id, body.link];
-      const result = await pgClient.query(queryText, values);
-      console.log('Inserted record:', result.rows[0]);
+      var queryDuration = await insertLinkInDb(body.link, id)
       res.json({id: id})
+      insertQueryDuration("new_short_link", queryDuration)
+      insertQueryCount("new_short_link")
       } catch (err) {
       console.error('Query error', err);
       res.status(500).send('Internal Server Error');
@@ -80,3 +83,37 @@ app.post('/link', async (req: Request, res: Response) => {
 app.listen(port, () => {
   console.log(`Server is running at http://localhost:${port}`);
 });
+
+async function insertLinkInDb(link: string, id: string): Promise<number> {
+  const queryText = `INSERT INTO ${urlsTable}(id, url) VALUES($1, $2) RETURNING *`;
+  const values = [id, link]
+
+  const start = performance.now();
+  const result = await pgClient.query(queryText, values);
+  const end = performance.now();
+
+  console.log('Inserted record:', result.rows[0]);
+
+  const queryDuration = end - start;
+
+  return queryDuration
+}
+
+async function insertQueryDuration(requestType: string, queryDuration: number) {
+  const queryText = `INSERT INTO ${queryDurationTable}(request_type, duration) VALUES($1, $2) RETURNING *`;
+  const values = [requestType, queryDuration];
+  await pgClient.query(queryText, values);
+}
+
+async function insertQueryCount(requestType: string) {
+  var queryText = `UPDATE ${queryCountTable} SET number_of_requests = number_of_requests + 1 WHERE request_type = '${requestType}';`;
+  await pgClient.query(queryText);
+}
+
+async function readLinkFromDb(id: string): Promise<[QueryResult<any>,number]> {
+  const start = performance.now();
+  const result = await pgClient.query(`SELECT url FROM ${urlsTable} WHERE id = $1`, [id]);
+  const end = performance.now();
+  const queryDuration = end - start;
+  return [result, queryDuration]
+}
